@@ -99,7 +99,7 @@ class DNGImageReader:
 
                 params = {
                     "gamma": (1.0, 1.0) if linear_output else (2.2, 4.5),
-                    "no_auto_bright": True,
+                    "no_auto_bright": linear_output,
                     "output_bps": 16,
                     "bright": 1.0,
                     "user_sat": None
