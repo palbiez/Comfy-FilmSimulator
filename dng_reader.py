@@ -15,7 +15,12 @@ class DNGImageReader:
                 "dng_path": ("STRING", {"default": "", "multiline": False}),
                 "linear_output": ("BOOLEAN", {"default": True, "label_on": "Enabled (HDR/Linear)", "label_off": "Disabled (SDR/Gamma)"}),
                 "wb_mode": (["As Shot", "Auto (Grey World)", "Daylight (5500K)", "Tungsten (2850K)", "Fluorescent (3800K)", "Flash", "None (Raw Sensor)"], {"default": "As Shot"}),
-                "target_max_exposure": ("FLOAT", {"default": 0.5, "min": 0.1, "max": 10.0, "step": 0.05, "tooltip": "Physical Gain. 0.5 matches most camera previews. 1.0 is sensor clipping point."})
+                "target_max_exposure": ("FLOAT", {"default": 0.5, "min": 0.1, "max": 10.0, "step": 0.05, "tooltip": "Legacy output gain. 0.5 matches most camera previews."}),
+                "auto_brightness": ("BOOLEAN", {"default": True, "label_on": "Auto brightness", "label_off": "Fixed brightness", "tooltip": "Enabled for SDR. Linear/HDR output keeps automatic brightness disabled to preserve scene-referred values."}),
+                "auto_bright_threshold": ("FLOAT", {"default": 0.01, "min": 0.0, "max": 1.0, "step": 0.001, "tooltip": "LibRaw clipped-pixel ratio used by automatic brightness."}),
+                "exposure_ev": ("FLOAT", {"default": 0.0, "min": -2.0, "max": 3.0, "step": 0.1, "tooltip": "Linear exposure shift before gamma. RawPy supports 0.25x to 8x (-2 to +3 EV)."}),
+                "highlight_recovery": (["clip", "blend", "reconstruct"], {"default": "clip"}),
+                "highlight_recovery_level": ("INT", {"default": 5, "min": 3, "max": 9, "step": 1, "tooltip": "RawPy reconstruction level (3 favors whites, 9 favors color). Used only for reconstruct."})
             }
         }
     
@@ -38,7 +43,10 @@ class DNGImageReader:
         except Exception:
             return 0
 
-    def read_dng(self, dng_path, linear_output, wb_mode, target_max_exposure):
+    def read_dng(self, dng_path, linear_output, wb_mode, target_max_exposure,
+                 auto_brightness=True, auto_bright_threshold=0.01,
+                 exposure_ev=0.0, highlight_recovery="clip",
+                 highlight_recovery_level=5):
         # Validate path
         if not dng_path or not os.path.exists(dng_path):
             print(f"[DNG Reader Error] File not found: {dng_path}")
@@ -99,11 +107,31 @@ class DNGImageReader:
 
                 params = {
                     "gamma": (1.0, 1.0) if linear_output else (2.2, 4.5),
-                    "no_auto_bright": linear_output,
+                    "no_auto_bright": bool(linear_output) or not bool(auto_brightness),
+                    "auto_bright_thr": float(auto_bright_threshold),
                     "output_bps": 16,
                     "bright": 1.0,
                     "user_sat": None
                 }
+
+                exposure_ev = float(exposure_ev)
+                if not -2.0 <= exposure_ev <= 3.0:
+                    raise ValueError("exposure_ev must be between -2 and +3 EV for RawPy")
+                # RawPy applies exp_shift in linear light before gamma.
+                params["exp_shift"] = float(2.0 ** exposure_ev)
+
+                highlight_enum = getattr(rawpy, "HighlightMode", None)
+                if highlight_recovery == "reconstruct":
+                    reconstruct = getattr(highlight_enum, "Reconstruct", None)
+                    if reconstruct is None:
+                        raise ValueError("Installed RawPy does not support highlight reconstruction")
+                    params["highlight_mode"] = reconstruct(int(highlight_recovery_level))
+                elif highlight_recovery == "clip":
+                    params["highlight_mode"] = getattr(highlight_enum, "Clip", 0)
+                elif highlight_recovery == "blend":
+                    params["highlight_mode"] = getattr(highlight_enum, "Blend", 2)
+                else:
+                    raise ValueError(f"Unsupported highlight_recovery: {highlight_recovery}")
 
                 if use_camera_wb:
                     params["use_camera_wb"] = True
@@ -114,8 +142,15 @@ class DNGImageReader:
                     params["use_auto_wb"] = False
                     params["user_wb"] = user_wb
 
-                # raw.postprocess can raise; keep in try/except
-                rgb_image = raw.postprocess(**params)
+                # RawPy versions before 0.16.1 do not expose auto_bright_thr.
+                # Retry without that optional parameter to preserve compatibility.
+                try:
+                    rgb_image = raw.postprocess(**params)
+                except (TypeError, AttributeError) as postprocess_error:
+                    if "auto_bright_thr" not in str(postprocess_error):
+                        raise
+                    params.pop("auto_bright_thr", None)
+                    rgb_image = raw.postprocess(**params)
 
                 # --- 3. Normalization (Float32) ---
                 image_array = rgb_image.astype(np.float32)
@@ -136,7 +171,11 @@ class DNGImageReader:
                 image_tensor = torch.from_numpy(image_array).unsqueeze(0).float()
 
                 # --- 4. Metadata Extraction ---
-                metadata = self.extract_metadata(raw, dng_path, wb_info_str, target_max_exposure, linear_output)
+                metadata = self.extract_metadata(
+                    raw, dng_path, wb_info_str, target_max_exposure, linear_output,
+                    auto_brightness, auto_bright_threshold, exposure_ev,
+                    highlight_recovery, highlight_recovery_level
+                )
 
                 print(f"[SmartHDR] Loaded DNG: {os.path.basename(dng_path)}. Gain: {target_max_exposure}")
 
@@ -147,7 +186,10 @@ class DNGImageReader:
             empty = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
             return (empty, f"Error: {str(e)}")
 
-    def extract_metadata(self, raw, dng_path, wb_info_str, target_max_exposure, linear_output):
+    def extract_metadata(self, raw, dng_path, wb_info_str, target_max_exposure,
+                         linear_output, auto_brightness=True,
+                         auto_bright_threshold=0.01, exposure_ev=0.0,
+                         highlight_recovery="clip", highlight_recovery_level=5):
         try:
             sizes = getattr(raw, 'sizes', None)
             if sizes is not None:
@@ -195,7 +237,7 @@ class DNGImageReader:
             except Exception:
                 camera_make = 'Unknown'
 
-            metadata_str = f"File: {os.path.basename(dng_path)}\nWidth: {width}\nHeight: {height}\nCamera: {camera_model}\nCamera Maker: {camera_make}\nBayer Pattern: {bayer_pattern_str}\nColor Description: {color_desc}\nWB: {wb_info_str}\nExposure Gain: {target_max_exposure}x\nLinear Output Mode: {'Enabled' if linear_output else 'Disabled'}"
+            metadata_str = f"File: {os.path.basename(dng_path)}\nWidth: {width}\nHeight: {height}\nCamera: {camera_model}\nCamera Maker: {camera_make}\nBayer Pattern: {bayer_pattern_str}\nColor Description: {color_desc}\nWB: {wb_info_str}\nExposure Gain (legacy): {target_max_exposure}x\nExposure EV: {exposure_ev:+.2f}\nAuto Brightness: {'Disabled for linear output' if linear_output else ('Enabled' if auto_brightness else 'Disabled')}\nAuto Brightness Threshold: {auto_bright_threshold}\nHighlight Recovery: {highlight_recovery} (level {highlight_recovery_level})\nLinear Output Mode: {'Enabled' if linear_output else 'Disabled'}"
 
             try:
                 black_level = getattr(raw, 'black_level', 'Unknown')

@@ -4,6 +4,7 @@ from .save_avif_hdr import SaveAVIF_HDR
 from .hdr_merge import HDRMergeNode
 from .save_sdr import SaveSDR
 from .film_pipeline import FilmPipelineNode
+from .exposure_analysis import ImageExposureAnalysis
 
 NODE_CLASS_MAPPINGS = {
     "DNG Image Reader": DNGImageReader,
@@ -12,6 +13,7 @@ NODE_CLASS_MAPPINGS = {
     "HDR Merge (Gainmap)": HDRMergeNode,
     "SaveSDR": SaveSDR,
     "FilmPipelineNode": FilmPipelineNode,
+    "ImageExposureAnalysis": ImageExposureAnalysis,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -21,6 +23,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "HDR Merge (Gainmap)": "HDR Merge (Gainmap)",
     "SaveSDR": "Save SDR Preview (PNG/JPEG)",
     "FilmPipelineNode": "Film Pipeline (RAW -> Film -> Save)",
+    "ImageExposureAnalysis": "Image Exposure Analysis",
 }
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']

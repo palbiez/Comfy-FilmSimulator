@@ -11,6 +11,7 @@ This repository includes a convenient Film Pipeline node and helper nodes that m
 ### Key nodes
 
 - `DNG Image Reader` — Load a DNG/RAW file (supports linear HDR output).
+- `Image Exposure Analysis` — Deterministic RGB/luminance histogram and clipping analysis with optional product mask; returns the input image unchanged.
 - `Film Simulation V4.1 (HDR Capable)` — Apply film simulation in a linear HDR workflow and generate an HDR image plus an SDR preview.
 - `HDR Merge (Gainmap)` — Compute a smooth gainmap from an SDR/HDR pair and merge to produce a final HDR image suitable for AVIF/HEIC export.
 - `Save SDR Preview (PNG/JPEG)` — Save the SDR preview (performs linear → sRGB conversion when requested).
@@ -73,6 +74,8 @@ print(info)
 
 - Guided filter (edge-aware smoothing) is used by default for HDR merging when available (OpenCV contrib's `ximgproc.guidedFilter`). If that package is not available, the pipeline falls back to Gaussian smoothing.
 - The pipeline expects linear, scene-referred inputs for HDR processing. The SDR preview and Save SDR node will convert to sRGB for display when requested.
+- `DNG Image Reader` keeps automatic LibRaw brightness disabled for linear/HDR output. For SDR, `auto_brightness` defaults to the existing automatic behavior and `auto_bright_threshold` is the LibRaw clipped-pixel ratio (default 1%). `exposure_ev` is passed to RawPy as a linear `exp_shift` and is limited to -2..+3 EV by RawPy. Highlight recovery uses RawPy's `clip`, `blend`, or reconstruction modes; reconstruction levels are 3..9 where supported.
+- `Image Exposure Analysis` assumes normalized RGB values in the ComfyUI `IMAGE` tensor. Because that tensor has no transfer-function metadata, the node does not guess linear versus sRGB. It reports the Rec.709 luminance proxy `0.2126*R + 0.7152*G + 0.0722*B` in the input encoding. Any-channel highlight clipping and full-RGB highlight clipping are both included in `ANALYSIS_JSON`. A mask restricts all statistics to selected product pixels. The node never normalizes or changes image pixels.
 - For HDR export, install `pillow-heif` (to enable HEIF/AVIF saving with Pillow). For guided filtering, install `opencv-contrib-python` to get the `ximgproc` module if you want edge-aware merging.
 
 ## Attribution
